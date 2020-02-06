@@ -1,0 +1,17 @@
+######################################################
+##
+## The static inventory puts the hosts in different groups as described here: https://docs.ansible.com/ansible/latest/user_guide/intro_inventory.html#hosts-and-groups
+## Variables would be defined directly for each host, including the ansible_user, the login user with sudoers permissions.
+## For authentication, either the password or the SSH Private Key can be used.
+##
+######################################################
+
+[hdp-master]
+hdp-master1 ansible_host=51.158.71.197 ansible_user=root ansible_ssh_pass=hadoop ansible_ssh_private_key_file="~/.ssh/id_rsa" rack=/default-rack
+
+[hdp-slave]
+hdp-slave1 ansible_host=163.172.180.81 ansible_user=root ansible_ssh_pass=hadoop ansible_ssh_private_key_file="~/.ssh/id_rsa" rack=/default-rack
+hdp-slave2 ansible_host=163.172.180.150 ansible_user=root ansible_ssh_pass=hadoop ansible_ssh_private_key_file="~/.ssh/id_rsa" rack=/default-rack
+
+[hdp-kdc]
+hdp-kdc ansible_host=51.158.103.127 ansible_user=root ansible_ssh_pass=hadoop ansible_ssh_private_key_file="~/.ssh/id_rsa" rack=/default-rack

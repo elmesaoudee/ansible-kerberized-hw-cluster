@@ -1,0 +1,124 @@
+---
+- set_fact: outer_loop="{{ item }}"
+- set_fact:
+    aws_tags: "{{ aws_tags_custom | default({})
+    | combine({ 'Cluster': cluster_name })
+    | combine({ 'Role': outer_loop.host_group })
+    | combine({ 'Group': cluster_name + '-' + outer_loop.host_group })
+    | combine({ 'Name': cluster_name + '-' + outer_loop.host_group })
+     }}"
+
+- name: Get AMI information
+  ec2_ami_facts:
+    region: "{{ cloud_config.region }}"
+    image_ids: "{{ outer_loop.image }}"
+  register: current_ami
+
+- name: Fail if the AMI does not provide any information
+  fail:
+    msg: "The AMI {{ outer_loop.image }} does not exist in region {{ cloud_config.region }} or it does not provide any information."
+  when: current_ami['images'] | length == 0
+
+- name: Create {{ outer_loop.host_group }} node(s) (EBS root volume)
+  ec2:
+    region: "{{ cloud_config.region }}"
+    zone: "{{ cloud_config.zone }}"
+    image: "{{ outer_loop.image }}"
+    instance_type: "{{ outer_loop.type }}"
+    spot_price: "{{ (outer_loop.spot|default(false) == true) | ternary(outer_loop.spot_price,omit) }}"
+    vpc_subnet_id: "{{ cluster_subnet.subnet.id }}"
+    groups: "{{ outer_loop.security_groups }}"
+    assign_public_ip: "{{ outer_loop.public_ip }}"
+    key_name: "{{ cloud_config.ssh.keyname }}"
+    exact_count: "{{ outer_loop.count }}"
+    instance_initiated_shutdown_behavior: "{{ (outer_loop.spot|default(false) == true) | ternary('terminate','stop') }}"
+    volumes:
+      - device_name: "{{ current_ami['images'][0]['root_device_name'] }}"
+        volume_type: "{{ outer_loop.root_volume.type }}"
+        volume_size: "{{ outer_loop.root_volume.size }}"
+        delete_on_termination: true
+      - { device_name: /dev/xvdb, ephemeral: ephemeral0 }
+      - { device_name: /dev/xvdc, ephemeral: ephemeral1 }
+      - { device_name: /dev/xvdd, ephemeral: ephemeral2 }
+      - { device_name: /dev/xvde, ephemeral: ephemeral3 }
+      - { device_name: /dev/xvdf, ephemeral: ephemeral4 }
+      - { device_name: /dev/xvdg, ephemeral: ephemeral5 }
+      - { device_name: /dev/xvdh, ephemeral: ephemeral6 }
+      - { device_name: /dev/xvdi, ephemeral: ephemeral7 }
+      - { device_name: /dev/xvdj, ephemeral: ephemeral8 }
+      - { device_name: /dev/xvdk, ephemeral: ephemeral9 }
+      - { device_name: /dev/xvdl, ephemeral: ephemeral10 }
+      - { device_name: /dev/xvdm, ephemeral: ephemeral11 }
+      - { device_name: /dev/xvdn, ephemeral: ephemeral12 }
+      - { device_name: /dev/xvdo, ephemeral: ephemeral13 }
+      - { device_name: /dev/xvdp, ephemeral: ephemeral14 }
+      - { device_name: /dev/xvdq, ephemeral: ephemeral15 }
+      - { device_name: /dev/xvdr, ephemeral: ephemeral16 }
+      - { device_name: /dev/xvds, ephemeral: ephemeral17 }
+      - { device_name: /dev/xvdt, ephemeral: ephemeral18 }
+      - { device_name: /dev/xvdu, ephemeral: ephemeral19 }
+      - { device_name: /dev/xvdv, ephemeral: ephemeral20 }
+      - { device_name: /dev/xvdw, ephemeral: ephemeral21 }
+      - { device_name: /dev/xvdx, ephemeral: ephemeral22 }
+      - { device_name: /dev/xvdy, ephemeral: ephemeral23 }
+    count_tag:
+      Group: "{{ cluster_name }}-{{ outer_loop.host_group }}"
+    instance_tags: "{{ aws_tags }}"
+    wait: yes
+    wait_timeout: 600
+    spot_wait_timeout: 600
+    user_data: |
+      #!/bin/sh
+      [ -e /bin/yum-config-manager ] && yum-config-manager --enable rhui-REGION-rhel-server-optional
+  register: current_ec2
+  when: outer_loop.root_volume.ebs
+
+- name: Set name tag for AWS instances
+  ec2_tag:
+    region: "{{ cloud_config.region }}"
+    resource: "{{ local_loop.1.id }}"
+    tags:
+      Name: "{{ aws_tags.Name }}-{{ '%02d' | format(local_loop.0 + 1) }}"
+  with_indexed_items: "{{ current_ec2.instances }}"
+  loop_control:
+    label: "{{ local_loop.1.id }} - {{ aws_tags.Name }}-{{ '%02d' | format(local_loop.0 + 1) }}"
+    loop_var: local_loop
+
+# as 'instances' gets returned [] for already existing ec2 instances, better use tagged_instances
+# see: https://github.com/ansible/ansible/issues/14593
+- set_fact:    
+    ec2_instances: "{{ current_ec2.tagged_instances }}"
+
+- name: Get volumes ids
+  ec2_vol:
+    region: "{{ cloud_config.region }}"
+    instance: "{{ local_loop.id }}"
+    state: list
+  with_items: "{{ ec2_instances }}"
+  register: ec2_instances_volumes
+  loop_control:
+    label: "{{ local_loop }}"
+    loop_var: local_loop
+
+- name: Tag volumes
+  ec2_tag:
+    region: "{{ cloud_config.region }}"
+    resource: "{{ local_loop.1.id }}"
+    tags: "{{ aws_tags | combine({'Instance': local_loop.1.attachment_set.instance_id}, {'Device': local_loop.1.attachment_set.device}) }}"
+  with_subelements:
+    - "{{ ec2_instances_volumes.results }}"
+    - volumes
+  loop_control:
+    label: "{{ local_loop.1.id }} - {{ local_loop.1.attachment_set.device }}"
+    loop_var: local_loop
+
+- name: Wait for SSH to start
+  wait_for:
+    host: "{{ (outer_loop.public_ip|default(false)== true) | ternary(local_loop.public_ip,local_loop.private_ip) }}"
+    port: 22
+    state: started
+    delay: 30
+    timeout: 300
+  loop_control:
+    loop_var: local_loop
+  with_items: '{{ current_ec2.instances }}'
